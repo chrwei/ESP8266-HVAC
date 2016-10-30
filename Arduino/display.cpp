@@ -1,13 +1,14 @@
 #include "display.h"
 #include "Nextion.h"
 #include "HVAC.h"
+#include <ESPAsyncWebServer.h> // https://github.com/me-no-dev/ESPAsyncWebServer
 #include <TimeLib.h>
 #include <ESP8266mDNS.h> // for WiFi.RSSI()
-#include <Event.h>
+#include "eeMem.h"
 
 Nextion nex;
 extern HVAC hvac;
-extern eventHandler event;
+extern AsyncEventSource events;
 
 void Display::init()
 {
@@ -15,7 +16,7 @@ void Display::init()
   nex.reset();
   screen( true ); // brighten the screen if it just reset
   refreshAll();
-  nex.itemPic(9, hvac.m_EE.bLock ? 20:21);
+  nex.itemPic(9, ee.bLock ? 20:21);
 }
 
 // called each second
@@ -34,7 +35,6 @@ void Display::oneSec()
     if(--m_backlightTimer == 0)
         screen(false);
   }
-
   static uint8_t lastState;
   static bool lastFan;
   if(--m_temp_counter <= 0 || hvac.getState() != lastState || hvac.getFanRunning() != lastFan)
@@ -86,22 +86,22 @@ void Display::checkNextion() // all the Nextion recieved commands
               break;
 
             case 22: // fan
-              if(hvac.m_EE.bLock) break;
+              if(ee.bLock) break;
               hvac.setFan( (hvac.getFan() == FM_On) ? FM_Auto : FM_On ); // Todo: Add 3rd icon
               updateModes(); // faster feedback
               break;
             case 23: // Mode
-              if(hvac.m_EE.bLock) break;
+              if(ee.bLock) break;
               hvac.setMode( (hvac.getSetMode() + 1) & 3 );
               updateModes(); // faster feedback
               break;
             case 24: // Heat
-              if(hvac.m_EE.bLock) break;
+              if(ee.bLock) break;
               hvac.setHeatMode( (hvac.getHeatMode() + 1) % 3 );
               updateModes(); // faster feedback
               break;
             case 10: // notification clear
-              if(hvac.m_EE.bLock) break;
+              if(ee.bLock) break;
               hvac.m_notif = Note_None;
               break;
             case 11: // forecast
@@ -114,20 +114,20 @@ void Display::checkNextion() // all the Nextion recieved commands
               updateClock();
               break;
             case 12: // DOW
-              if(hvac.m_EE.bLock) break;
+              if(ee.bLock) break;
               textIdx = 0;
               nex.setPage("keyboard"); // go to keyboard
               nex.itemText(1, "Enter Zipcode");
               break;
             case 13: // temp scale
-              if(hvac.m_EE.bLock) break;
+              if(ee.bLock) break;
               textIdx = 1;
               nex.setPage("keyboard"); // go to keyboard
               nex.itemText(1, "Enter Password");
               break;
             case 5:  // target temp
             case 19:
-              if(hvac.m_EE.bLock) break;
+              if(ee.bLock) break;
               hvac.enableRemote();
               break;
             case 1: // out
@@ -142,7 +142,7 @@ void Display::checkNextion() // all the Nextion recieved commands
             case 25: // lock
 //#define PWLOCK  // uncomment for password entry unlock
 #ifdef PWLOCK
-              if(hvac.m_EE.bLock)
+              if(ee.bLock)
               {
                 textIdx = 2;
                 nex.itemText(0, ""); // clear last text
@@ -150,11 +150,11 @@ void Display::checkNextion() // all the Nextion recieved commands
                 nex.itemText(1, "Enter Password");
               }
               else
-                hvac.m_EE.bLock = true;
+                ee.bLock = true;
 #else
-              hvac.m_EE.bLock = !hvac.m_EE.bLock;
+              ee.bLock = !ee.bLock;
 #endif
-              nex.itemPic(9, hvac.m_EE.bLock ? 20:21);
+              nex.itemPic(9, ee.bLock ? 20:21);
               break;
           }
           break;
@@ -169,18 +169,18 @@ void Display::checkNextion() // all the Nextion recieved commands
         case 0: // zipcode edit
           if(strlen(cBuf + 1) < 5)
             break;
-          strncpy(hvac.m_EE.zipCode, cBuf + 1, sizeof(hvac.m_EE.zipCode));
+          strncpy(ee.zipCode, cBuf + 1, sizeof(ee.zipCode));
           break;
         case 1: // password edit
           if(strlen(cBuf + 1) < 5)
             return;
-          strncpy(hvac.m_EE.password, cBuf + 1, sizeof(hvac.m_EE.password) );
+          strncpy(ee.password, cBuf + 1, sizeof(ee.password) );
           break;
         case 2: // password unlock
-          if(!strcmp(hvac.m_EE.password, cBuf + 1) )
-            hvac.m_EE.bLock = false;
+          if(!strcmp(ee.password, cBuf + 1) )
+            ee.bLock = false;
           nex.itemText(0, ""); // clear password
-          nex.itemPic(9, hvac.m_EE.bLock ? 20:21);
+          nex.itemPic(9, ee.bLock ? 20:21);
           break;
       }
       screen(true); // back to main page
@@ -210,13 +210,13 @@ void Display::updateTemps()
   uint16_t temp = hvac.showLocalTemp() ? hvac.m_localTemp : hvac.m_inTemp;
   uint16_t rh = hvac.showLocalTemp() ? hvac.m_localRh : hvac.m_rh;
 
-  if(last[0] != temp)                   nex.itemFp(2, last[0] = temp);
-  if(last[1] != rh)                     nex.itemFp(3, last[1] = rh);
-  if(last[2] != hvac.m_targetTemp)      nex.itemFp(4, last[2] = hvac.m_targetTemp);
-  if(last[3] != hvac.m_EE.coolTemp[1])  nex.itemFp(5, last[3] = hvac.m_EE.coolTemp[1]);
-  if(last[4] != hvac.m_EE.coolTemp[0])  nex.itemFp(6, last[4] = hvac.m_EE.coolTemp[0]);
-  if(last[5] != hvac.m_EE.heatTemp[1])  nex.itemFp(7, last[5] = hvac.m_EE.heatTemp[1]);
-  if(last[6] != hvac.m_EE.heatTemp[0])  nex.itemFp(8, last[6] = hvac.m_EE.heatTemp[0]);
+  if(last[0] != temp)               nex.itemFp(2, last[0] = temp);
+  if(last[1] != rh)                 nex.itemFp(3, last[1] = rh);
+  if(last[2] != hvac.m_targetTemp)  nex.itemFp(4, last[2] = hvac.m_targetTemp);
+  if(last[3] != ee.coolTemp[1])     nex.itemFp(5, last[3] = ee.coolTemp[1]);
+  if(last[4] != ee.coolTemp[0])     nex.itemFp(6, last[4] = ee.coolTemp[0]);
+  if(last[5] != ee.heatTemp[1])     nex.itemFp(7, last[5] = ee.heatTemp[1]);
+  if(last[6] != ee.heatTemp[0])     nex.itemFp(8, last[6] = ee.heatTemp[0]);
 }
 
 const char *_days_short[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
@@ -260,12 +260,12 @@ void Display::drawForecast(bool bRef)
 {
   int i;
 
-  if(hvac.m_fcData[1].h == -1) // no data yet
+  if(hvac.m_fcData[1].h == 255) // no data yet
     return;
 
   if(bRef)
   {
-    if(hvac.m_fcData[0].h == -1) // first time only
+    if(hvac.m_fcData[0].h == 255) // first time only
     {
       hvac.m_fcData[0].h = hvac.m_fcData[1].h;
       hvac.m_fcData[0].t = hvac.m_fcData[1].t;
@@ -282,6 +282,8 @@ void Display::drawForecast(bool bRef)
   if(m_updateFcst < 0) // An uncaught request timeout
     m_updateFcst = 5;
 
+  displayOutTemp(); // update temp for HVAC
+
   if(nex.getPage()) // on different page
     return;
 
@@ -293,8 +295,8 @@ void Display::drawForecast(bool bRef)
     delay(5);
   }
 
-  int8_t tmin = hvac.m_outMin[0];
-  int8_t tmax = hvac.m_outMax[0];
+  int8_t tmin = hvac.m_outMin;
+  int8_t tmax = hvac.m_outMax;
   int16_t y = Fc_Top+1;
   int16_t incy = (Fc_Height-4) / 3;
   int16_t dec = (tmax - tmin)/3;
@@ -309,50 +311,57 @@ void Display::drawForecast(bool bRef)
     t -= dec;
   }
 
+  int fcCnt;
+  for(fcCnt = 1; fcCnt < FC_CNT; fcCnt++) // get length (255 = unused)
+    if(hvac.m_fcData[fcCnt].h == 255)
+      break;
+
   int8_t day = weekday()-1;              // current day
-  int8_t pts = hvac.m_fcData[18].h - hvac.m_fcData[1].h; // normally 52 hours
-  int8_t h;
+  int16_t hrs = hvac.m_fcData[fcCnt-1].h - hvac.m_fcData[1].h; // normally 180ish hours
+  int16_t h;
   int16_t day_x = 0;
 
-  if(pts <= 0) return;                     // error
+  if(hrs <= 0) return;                     // error
 
-  for(i = 0, h = hvac.m_fcData[1].h; i < pts; i++, h++)    // v-lines
+  for(i = 0, h = hvac.m_fcData[1].h; i < hrs; i++, h++)    // v-lines
   {
-    x = Fc_Left + Fc_Width * i / pts;
+    x = Fc_Left + Fc_Width * i / hrs; // offset by hour
     if( (h % 24) == 0) // midnight
     {
-      nex.line(x, Fc_Top+1, x, Fc_Top+Fc_Height-2, rgb16(23, 47, 23) ); // (light gray)
-      if(x - 49 > Fc_Left) // fix 1st day too far left
+      nex.line(x, Fc_Top+1, x, Fc_Top+Fc_Height-2, rgb16(20, 41, 20) ); // (light gray)
+      if(x - 14 > Fc_Left) // fix 1st day too far left
       {
-        nex.text(day_x = x - 54, Fc_Top+Fc_Height+1, 1, rgb16(0, 63, 31), _days_short[day]);
+        nex.text(day_x = x - 27, Fc_Top+Fc_Height+1, 1, rgb16(0, 63, 31), _days_short[day]); // cyan
       }
       if(++day > 6) day = 0;
     }
     if( (h % 24) == 12) // noon
     {
-      nex.line(x, Fc_Top, x, Fc_Top+Fc_Height, rgb16(15, 31, 15) ); // gray
+      nex.line(x, Fc_Top, x, Fc_Top+Fc_Height, rgb16(12, 25, 12) ); // gray
     }
   }
 
-  day_x += 84;
+  day_x += 28;
   if(day_x < Fc_Left+Fc_Width - (8*3) )  // last partial day
-    nex.text(day_x, Fc_Top+Fc_Height+1, 1, rgb16(0, 63, 31), _days_short[day]);
+    nex.text(day_x, Fc_Top+Fc_Height+1, 1, rgb16(0, 63, 31), _days_short[day]); // cyan
+
+  if((tmax-tmin) == 0 || hrs == 0) // divide by 0
+    return;
 
   int16_t y2 = Fc_Top+Fc_Height - 1 - (hvac.m_fcData[1].t - tmin) * (Fc_Height-2) / (tmax-tmin);
   int16_t x2 = Fc_Left;
-
-  for(i = 1; i <= 18; i++) // should be 18 data points
+  for(i = 1; i < fcCnt; i++) // should be 41 data points
   {
     int y1 = Fc_Top+Fc_Height - 1 - (hvac.m_fcData[i].t - tmin) * (Fc_Height-2) / (tmax-tmin);
-    int x1 = Fc_Left + (hvac.m_fcData[i].h - hvac.m_fcData[1].h) * (Fc_Width-1) / pts;
+    int x1 = Fc_Left + (hvac.m_fcData[i].h - hvac.m_fcData[1].h) * (Fc_Width-1) / hrs;
 
     if(x2 < Fc_Left) x2 = Fc_Left;  // first point may be history
     if(x1 < Fc_Left) x1 = x2;  // todo: fix this
     nex.line(x2, y2, x1, y1, rgb16(31, 0, 0) ); // red
+    delay(5); // small glitch in drawing
     x2 = x1;
     y2 = y1;
   }
-  displayOutTemp();
 }
 
 // get value at current minute between hours
@@ -365,7 +374,7 @@ int Display::tween(int8_t t1, int8_t t2, int m, int8_t h)
 
 void Display::displayOutTemp()
 {
-  if(hvac.m_fcData[1].h == -1) // no read yet
+  if(hvac.m_fcData[1].h == 255) // no read yet
     return;
   
   int8_t hd = hour() - hvac.m_fcData[1].h;      // hours past 1st value
@@ -395,7 +404,7 @@ void Display::Note(char *cNote)
 {
   screen(true);
   nex.itemText(12, cNote);
-  event.alert(cNote);
+  events.send(cNote, "alert");
 }
 
 // update the notification text box
@@ -432,7 +441,7 @@ void Display::updateNotification(bool bRef)
   }
   nex.itemText(12, s);
   if(s != "" && bRef == false) // refresh shouldn't be resent
-    event.alert(s);
+    events.send(s.c_str(), "alert");
 }
 
 // true: set screen backlight to bright plus switch to thermostat
@@ -452,6 +461,7 @@ bool Display::screen(bool bOn)
     bOn = true;
 
   m_backlightTimer = NEX_TIMEOUT; // update the auto backlight timer
+
   if(bOn)
   {
     if( bOn == bOldOn )
@@ -735,7 +745,7 @@ void Display::addGraphPoints()
   if( hvac.m_inTemp == 0)
     return;
 
-  m_points[m_pointsIdx].time = now() - (hvac.m_EE.tz*3600);
+  m_points[m_pointsIdx].time = now() - (ee.tz*3600);
 
   const int base = 660; // 66.0 base   Todo: scale all this
   int t = constrain(hvac.m_inTemp, 660, 900);
@@ -744,7 +754,7 @@ void Display::addGraphPoints()
   t = constrain(hvac.m_targetTemp, 660, 900);
   m_points[m_pointsIdx].h = (t - base) * 101 / 110;
 
-  int8_t ct = hvac.m_EE.cycleThresh;
+  int8_t ct = ee.cycleThresh;
   if(hvac.getMode() == Mode_Cool) // Todo: could be auto
     ct = -ct;
   t = constrain(hvac.m_targetTemp + ct, 660, 900);
@@ -753,7 +763,7 @@ void Display::addGraphPoints()
   m_points[m_pointsIdx].state = hvac.getState();
   m_points[m_pointsIdx].fan = hvac.getFanRunning();
 
-  if(++m_pointsIdx >= GPTS-1)
+  if(++m_pointsIdx >= GPTS)
     m_pointsIdx = 0;
 }
 
@@ -792,12 +802,6 @@ void Display::fillGraph()
 
 void Display::drawPoints(uint8_t *arr, uint16_t color)
 {
-  Serial.print("drawPoints ");
-  Serial.print(m_pointsIdx);
-  Serial.write(0xFF);
-  Serial.write(0xFF);
-  Serial.write(0xFF);
-
   int i = m_pointsIdx - 1;
   if(i < 0) i = GPTS-1;
   uint8_t *p = (uint8_t *)arr + ( i * sizeof(gPoint) );
